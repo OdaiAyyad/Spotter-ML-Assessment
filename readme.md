@@ -49,7 +49,11 @@ rolling-backtest estimates. Model selection used a rolling monthly backtest: tra
 clean months before the test month, evaluate on that month, Apr–Oct 2025.
 
 A random split trains on rows from the same dates as the test rows (temporal leakage),
-so its error is optimistic; the time split mirrors the real task.
+so its error is optimistic; the time split mirrors the real task. Specifically, on the
+Sep–Oct test period (clean rows), with the old features (`market_index` + `quote_signal`)
+time-split MAE is 72.43 vs random-split 48.10 (a random split hid the leakage in the old
+features); with the final features, time-split MAE is 42.22 vs random-split 40.82, showing
+that the final features behave the same under both splits.
 
 ## Key findings
 
