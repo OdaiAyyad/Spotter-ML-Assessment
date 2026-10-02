@@ -10,12 +10,12 @@ from sklearn.svm import SVR
 train = pd.read_csv("data/train_test.csv", parse_dates=["date"])
 train["rpm"] = train["posted_rate"] / train["distance"]
 train["is_bad"] = (train["rpm"] < 1.2) | (train["rpm"] > 4.0)
-train["mi_daily"] = train.groupby("date")["market_index"].transform("mean")  # features only, per date
+train["mi_daily"] = train.groupby("date")["market_index"].transform("mean")
 eq = pd.get_dummies(train["equipment"]).astype(int)
 EQ = list(eq.columns)
 train = train.join(eq)
 
-# ---- Diagnosis: what is quote_signal? ----
+# quote_signal diagnostic: std(qs±rpm) reveals sign-flipping by month
 clean = train[~train["is_bad"]]
 g = clean.groupby(clean["date"].dt.to_period("M"))
 print(pd.DataFrame({
@@ -26,14 +26,15 @@ dc = clean.groupby("date").apply(lambda d: d["quote_signal"].corr(d["rpm"]))
 print(dc.groupby(dc.index.to_period("M")).agg(
     lambda s: f"+:{(s > 0.5).sum()}  -:{(s < -0.5).sum()}  mixed:{(s.abs() <= 0.5).sum()}"))
 
-# ---- Rolling-origin machinery ----
 MONTHS = pd.period_range("2025-04", "2025-10", freq="M")
+
 
 def folds():
     for m in MONTHS:
         tr = train[(train["date"] < m.start_time) & ~train["is_bad"]]
         te = train[(train["date"] >= m.start_time) & (train["date"] < (m + 1).start_time) & ~train["is_bad"]]
         yield str(m), tr, te
+
 
 def evaluate(make_model, cols, target="rpm", train_cap=None):
     rows = []
@@ -50,45 +51,46 @@ def evaluate(make_model, cols, target="rpm", train_cap=None):
                      "MAPE": (err / te["posted_rate"].values).mean() * 100})
     return pd.DataFrame(rows).set_index("month")
 
+
 def summarize(title, results):
-    print(f"\n=== {title} ===")
+    print(f"\n{title}:")
     mae = pd.DataFrame({k: v["MAE"] for k, v in results.items()})
     mape = pd.DataFrame({k: v["MAPE"] for k, v in results.items()})
     print(mae.round(1))
     print("MAE  mean/std:\n", mae.agg(["mean", "std"]).round(1))
     print("MAPE mean:\n", mape.mean().round(2))
     first = mae.columns[0]
-    print(f"months each column beats '{first}':\n", (mae.sub(mae[first], axis=0) < 0).sum())
+    print(f"months beating '{first}':\n", (mae.sub(mae[first], axis=0) < 0).sum())
 
-# ---- Candidate models ----
+
 hgb = lambda: HistGradientBoostingRegressor(random_state=0)
+# scaler/imputer only for models that need normalised input
 ridge = lambda: make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), Ridge(alpha=1.0))
 rf = lambda: make_pipeline(SimpleImputer(strategy="median"),
                            RandomForestRegressor(n_estimators=100, min_samples_leaf=3, n_jobs=-1, random_state=0))
 svr = lambda: make_pipeline(SimpleImputer(strategy="median"), StandardScaler(), SVR(C=3.0))
 
-class MedianRPM:                       # naive yardstick: same $/mile for everyone
+
+class MedianRPM:
     def fit(self, X, y): self.m = float(np.median(y)); return self
     def predict(self, X): return np.full(len(X), self.m)
 
-# ---- Experiment A: which features? (HGB, target = rate per mile) ----
+
 FEATURES = {
     "base":          ["distance", "weight"] + EQ,
     "+market_row":   ["distance", "weight", "market_index"] + EQ,
     "+market_daily": ["distance", "weight", "mi_daily"] + EQ,
 }
-summarize("A: feature sets", {k: evaluate(hgb, c) for k, c in FEATURES.items()})
+summarize("feature sets", {k: evaluate(hgb, c) for k, c in FEATURES.items()})
 
-# ---- Experiment B: target definition (HGB, +market_daily) ----
 cols = FEATURES["+market_daily"]
-summarize("B: target", {"target=rpm": evaluate(hgb, cols, "rpm"),
-                        "target=dollars": evaluate(hgb, cols, "dollars")})
+summarize("target definition", {"target=rpm": evaluate(hgb, cols, "rpm"),
+                                "target=dollars": evaluate(hgb, cols, "dollars")})
 
-# ---- Experiment C: candidate models (target = rate per mile) ----
-summarize("C: models", {
-    "naive median rpm": evaluate(MedianRPM, cols),
-    "ridge": evaluate(ridge, cols),
-    "random forest": evaluate(rf, cols),
+summarize("candidate models", {
+    "naive median rpm":       evaluate(MedianRPM, cols),
+    "ridge":                  evaluate(ridge, cols),
+    "random forest":          evaluate(rf, cols),
     "hist gradient boosting": evaluate(hgb, cols),
-    "svr (8k rows)": evaluate(svr, cols, train_cap=8000),
+    "svr (8k rows)":          evaluate(svr, cols, train_cap=8000),
 })

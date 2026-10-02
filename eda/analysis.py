@@ -13,18 +13,21 @@ MONTHS = pd.period_range("2025-04", "2025-10", freq="M")
 BASE = ["distance", "weight"] + EQ
 WITH = BASE + ["market_index"]
 
+
 def fold_data(m):
     tr = train[(train["date"] < m.start_time) & ~train["is_bad"]]
     te = train[(train["date"] >= m.start_time) & (train["date"] < (m + 1).start_time)]
     return tr, te
 
+
 def fit_predict(tr, te, cols, seed=0, **params):
     model = HistGradientBoostingRegressor(random_state=seed, **params)
     model.fit(tr[cols], tr["rpm"])
-    return model.predict(te[cols]) * te["distance"].values       # dollars
+    return model.predict(te[cols]) * te["distance"].values
 
-# ---- 1. Signed error: does market_index push predictions the wrong way? ----
-print("\n=== 1. Signed error (pred - actual, $) on clean rows ===")
+
+# signed error reveals whether market_index pushes predictions wrong direction
+print("signed error (pred - actual) on clean rows:")
 rows = []
 for m in MONTHS:
     tr, te = fold_data(m)
@@ -36,8 +39,7 @@ for m in MONTHS:
     rows.append(row)
 print(pd.DataFrame(rows).set_index("month").round(2))
 
-# ---- 2. Light tuning (rolling folds, clean rows) ----
-print("\n=== 2. HGB tuning: mean and worst-month MAE ===")
+print("\nHGB tuning, mean and worst-month MAE:")
 res = []
 for lr, leaves, msl in product([0.05, 0.1], [15, 31], [20, 100]):
     for fname, cols in [("base", BASE), ("+mkt", WITH)]:
@@ -52,8 +54,7 @@ for lr, leaves, msl in product([0.05, 0.1], [15, 31], [20, 100]):
                     "MAE_mean": np.mean(maes), "MAE_worst": np.max(maes)})
 print(pd.DataFrame(res).sort_values("MAE_mean").round(1).to_string(index=False))
 
-# ---- 3. Where does the error live? (base features, pooled folds) ----
-print("\n=== 3. Error analysis ===")
+print("\nerror analysis by distance / equipment / missing weight:")
 parts = []
 for m in MONTHS:
     tr, te = fold_data(m)
@@ -70,12 +71,12 @@ for col in ["dist_bucket", "equipment", "weight_missing"]:
     print(pool.groupby(col, observed=True).agg(n=("ape", "size"), bias=("bias", "mean"),
           abs_err=("abs_err", "mean"), ape=("ape", "mean")).round(2), "\n")
 
-# ---- 4. (Optional) is the quote_signal regime detectable without labels? ----
-print("\n=== 4. quote_signal regime backtest (diagnostic only) ===")
-C = 4.15   # qs + rpm in flipped months; derived from months we've already seen (slight leak in this backtest)
+# quote_signal regime detection without labels; C derived from training-period observations
+print("quote_signal regime backtest (diagnostic only):")
+C = 4.15
 rows = []
 for m in MONTHS:
-    tr, te = fold_data(m)                       # test rows include ALL rows, as in real life
+    tr, te = fold_data(m)
     rpm_hat = fit_predict(tr, te, BASE) / te["distance"].values
     qs = te["quote_signal"].values
     d_plus = np.median(np.abs(qs - rpm_hat))
